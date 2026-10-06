@@ -7,6 +7,7 @@ interface StatCardProps {
   deltaTone?: 'positive' | 'neutral' | 'accent';
   subtext: string;
   isDemo?: boolean;
+  provenance?: string;
   onClick?: () => void;
 }
 
@@ -17,6 +18,7 @@ export const StatCard: React.FC<StatCardProps> = ({
   deltaTone = 'positive',
   subtext,
   isDemo = false,
+  provenance,
   onClick,
 }) => {
   const toneClass =
@@ -44,7 +46,14 @@ export const StatCard: React.FC<StatCardProps> = ({
       <div className="my-3 font-mono text-3xl font-semibold tracking-tight text-slate-100 tabular-nums">
         {value}
       </div>
-      <p className="text-xs text-slate-400 leading-relaxed">{subtext}</p>
+      <div className="space-y-1.5">
+        <p className="text-xs text-slate-400 leading-relaxed">{subtext}</p>
+        {provenance && (
+          <div className="pt-1.5 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
+            {provenance}
+          </div>
+        )}
+      </div>
     </div>
   );
 

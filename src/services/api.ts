@@ -140,24 +140,44 @@ export async function analyzeCaseWithPrecedent(
   }
 
   // Extract actual backend response fields:
-  // recommendation, confidence, evidence_to_submit, reasoning, memory_used, and recalled memories
+  // Supports both structured decision object and top-level backward compatibility fields
+  const decisionObj =
+    typeof data.decision === 'object' && data.decision !== null
+      ? (data.decision as Record<string, unknown>)
+      : null;
+
   const rawRecommendation = String(
-    data.recommendation ?? data.decision ?? 'FIGHT'
+    data.recommendation ??
+      decisionObj?.recommendation ??
+      (typeof data.decision === 'string' ? data.decision : 'FIGHT')
   );
   const decision = normalizeDecision(rawRecommendation);
   const confidence = normalizeConfidence(
-    data.confidence ?? data.confidence_score ?? 0
+    data.confidence ??
+      decisionObj?.confidence ??
+      data.confidence_score ??
+      decisionObj?.confidence_score ??
+      0
   );
 
   const evidenceToSubmit = extractStringArray(
     data.evidence_to_submit ??
+      decisionObj?.evidence_to_submit ??
       data.recommended_evidence ??
+      decisionObj?.recommended_evidence ??
       data.recommendedEvidence ??
-      data.evidence
+      data.evidence ??
+      decisionObj?.evidence
   );
 
   const reasoning = String(
-    data.reasoning ?? data.explanation ?? data.rationale ?? ''
+    data.reasoning ??
+      decisionObj?.reasoning ??
+      data.explanation ??
+      decisionObj?.explanation ??
+      data.rationale ??
+      decisionObj?.rationale ??
+      ''
   );
 
   const recalledMemoriesList = extractStringArray(
@@ -173,7 +193,10 @@ export async function analyzeCaseWithPrecedent(
   const memoryUsedFlag =
     typeof data.memory_used === 'boolean'
       ? data.memory_used
-      : Boolean(data.memory_used) || recalledMemoriesList.length > 0;
+      : typeof decisionObj?.memory_used === 'boolean'
+      ? decisionObj.memory_used
+      : Boolean(data.memory_used || decisionObj?.memory_used) ||
+        recalledMemoriesList.length > 0;
 
   const recommendedEvidence: EvidenceItem[] = evidenceToSubmit.map(
     (itemText, idx) => ({
@@ -218,6 +241,10 @@ export async function analyzeCaseWithPrecedent(
     hindsightMemoryUsed,
     improvedByMemory: memoryUsedFlag,
     analyzedAt: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    previous_outcome:
+      typeof data.previous_outcome === 'string'
+        ? data.previous_outcome
+        : undefined,
     isDemo: false,
   };
 }

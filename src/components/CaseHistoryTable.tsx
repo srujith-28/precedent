@@ -7,6 +7,8 @@ interface CaseHistoryTableProps {
   onSelectCase: (caseItem: ChargebackCase) => void;
   selectedCaseId?: string;
   onOpenOutcomeModal?: (caseItem: ChargebackCase) => void;
+  emptyMessage?: string;
+  isDemoMode?: boolean;
 }
 
 export const CaseHistoryTable: React.FC<CaseHistoryTableProps> = ({
@@ -14,13 +16,20 @@ export const CaseHistoryTable: React.FC<CaseHistoryTableProps> = ({
   onSelectCase,
   selectedCaseId,
   onOpenOutcomeModal,
+  emptyMessage,
+  isDemoMode = false,
 }) => {
   if (cases.length === 0) {
     return (
-      <div className="bg-[#0C1322] border border-slate-800/80 rounded-xl p-10 text-center">
+      <div className="bg-[#0C1322] border border-slate-800/80 rounded-xl p-10 text-center space-y-2">
         <p className="text-sm font-medium text-slate-300">
-          No dispute cases match your current filter criteria.
+          {emptyMessage || 'No dispute cases match your current filter criteria.'}
         </p>
+        {!isDemoMode && (
+          <p className="text-xs text-slate-500">
+            Cases analyzed or outcomes recorded during this active session will appear in this ledger.
+          </p>
+        )}
       </div>
     );
   }
@@ -70,9 +79,13 @@ export const CaseHistoryTable: React.FC<CaseHistoryTableProps> = ({
                   <td className="py-3 px-4 font-mono font-medium text-slate-100 whitespace-nowrap tabular-nums">
                     <div className="flex items-center gap-2">
                       <span>{item.caseId}</span>
-                      {item.isDemo && (
+                      {item.isDemo ? (
                         <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300/90 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                          Demo
+                          DEMONSTRATION
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-teal-300 border border-teal-500/30 bg-teal-500/10 px-1.5 py-0.5 rounded">
+                          LIVE SESSION
                         </span>
                       )}
                     </div>

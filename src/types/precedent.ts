@@ -1,5 +1,7 @@
 export type NavigationTab = 'dashboard' | 'analyze' | 'history' | 'memory';
 
+export type DataMode = 'live' | 'demo';
+
 export type DisputeDecision = 'FIGHT' | 'FOLD';
 
 export type CaseOutcome = 'WON' | 'LOST' | 'FOLDED' | 'PENDING';
@@ -42,6 +44,7 @@ export interface CaseAnalysisResult {
   hindsightMemoryUsed: MemoryEntry[];
   improvedByMemory: boolean;
   analyzedAt: string;
+  previous_outcome?: string | null;
   isDemo?: boolean;
 }
 

@@ -44,11 +44,11 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           <div>
             {memory.isDemo ? (
               <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300/90 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                Demo
+                DEMONSTRATION MEMORY
               </span>
             ) : (
               <span className="text-[10px] font-mono uppercase tracking-wider text-teal-300 border border-teal-500/30 bg-teal-500/10 px-1.5 py-0.5 rounded">
-                Live Hindsight
+                LIVE HINDSIGHT
               </span>
             )}
           </div>

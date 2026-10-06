@@ -1,3 +1,4 @@
+import json
 import os
 
 from dotenv import load_dotenv
@@ -13,7 +14,53 @@ if not GROQ_API_KEY:
 client = Groq(api_key=GROQ_API_KEY)
 
 
-def generate_decision(case, memories):
+def parse_groq_json(content: str) -> dict:
+    """
+    Safely parse JSON from Groq response, handling markdown fences,
+    extraneous text, and returning a structured fallback if decoding fails.
+    """
+    if not content or not isinstance(content, str):
+        return {}
+
+    cleaned = content.strip()
+
+    # Strip markdown code blocks (e.g. ```json ... ```)
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: locate first { and last }
+    start_idx = cleaned.find("{")
+    end_idx = cleaned.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(cleaned[start_idx : end_idx + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        "recommendation": "REVIEW",
+        "confidence": 50,
+        "evidence_to_submit": [],
+        "reasoning": cleaned,
+        "memory_used": False,
+    }
+
+
+def generate_decision(case, memories) -> dict:
 
     precedent_text = "\n\n".join(
         f"[{memory.type}] {memory.text}"
@@ -69,4 +116,5 @@ Return ONLY valid JSON with this structure:
         temperature=0.2,
     )
 
-    return response.choices[0].message.content
+    raw_content = response.choices[0].message.content
+    return parse_groq_json(raw_content)
