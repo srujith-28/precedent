@@ -2,12 +2,10 @@ import React from 'react';
 
 interface StatCardProps {
   label: string;
-  value: string;
+  value: string | number;
   deltaText: string;
   deltaTone?: 'positive' | 'neutral' | 'accent';
   subtext: string;
-  isDemo?: boolean;
-  provenance?: string;
   onClick?: () => void;
 }
 
@@ -17,8 +15,6 @@ export const StatCard: React.FC<StatCardProps> = ({
   deltaText,
   deltaTone = 'positive',
   subtext,
-  isDemo = false,
-  provenance,
   onClick,
 }) => {
   const toneClass =
@@ -31,29 +27,21 @@ export const StatCard: React.FC<StatCardProps> = ({
   const content = (
     <div className="flex flex-col justify-between h-full">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-slate-300">{label}</span>
-          {isDemo && (
-            <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300/90 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded">
-              Demo
-            </span>
-          )}
-        </div>
-        <span className={`font-mono text-xs font-medium tabular-nums ${toneClass}`}>
+        <span className="text-xs font-medium text-slate-300">{label}</span>
+        <span className={`font-mono text-[11px] font-medium tabular-nums ${toneClass}`}>
           {deltaText}
         </span>
       </div>
-      <div className="my-3 font-mono text-3xl font-semibold tracking-tight text-slate-100 tabular-nums">
+      <div
+        className={`my-3 font-semibold tracking-tight text-slate-100 ${
+          typeof value === 'string' && value.length > 12
+            ? 'text-sm font-medium text-slate-400 font-sans leading-snug py-1'
+            : 'font-mono text-3xl tabular-nums'
+        }`}
+      >
         {value}
       </div>
-      <div className="space-y-1.5">
-        <p className="text-xs text-slate-400 leading-relaxed">{subtext}</p>
-        {provenance && (
-          <div className="pt-1.5 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
-            {provenance}
-          </div>
-        )}
-      </div>
+      <p className="text-xs text-slate-400 leading-relaxed">{subtext}</p>
     </div>
   );
 

@@ -1,18 +1,28 @@
-export type NavigationTab = 'dashboard' | 'analyze' | 'history' | 'memory';
+import { ConsolidatedPrecedent } from '../utils/precedentConsolidator';
+import { EvidenceIntelligenceData } from '../utils/evidenceIntelligence';
 
-export type DataMode = 'live' | 'demo';
+export type NavigationTab =
+  | 'overview'
+  | 'analyze'
+  | 'history'
+  | 'learning-chain'
+  | 'memory'
+  | 'outcomes'
+  | 'analytics';
 
 export type DisputeDecision = 'FIGHT' | 'FOLD';
 
-export type CaseOutcome = 'WON' | 'LOST' | 'FOLDED' | 'PENDING';
+export type CaseOutcome = 'WON' | 'LOST' | 'PENDING';
+
+export type EvidenceStrength = 'STRONG' | 'WEAK' | 'MISSING' | 'UNCLASSIFIED';
 
 export interface EvidenceItem {
   id: string;
   label: string;
   category: string;
+  strength: EvidenceStrength;
   status: 'PRESENT' | 'RECOMMENDED' | 'CRITICAL_GAP';
   description: string;
-  isDemo?: boolean;
 }
 
 export interface MemoryEntry {
@@ -24,28 +34,60 @@ export interface MemoryEntry {
   outcomeLearnedFrom?: 'WON' | 'LOST';
   actualResult?: string;
   lesson: string;
-  recommendedAction: string;
-  recalledCount: number;
-  casesImprovedCount: number;
-  lastUpdated: string;
-  isDemo?: boolean;
+  rawMemories?: string[];
+  rawMemoryCount?: number;
+  relevanceContext: string;
+  sourceType: 'RECALLED FROM HINDSIGHT' | 'RETAINED IN HINDSIGHT';
+  timestamp: string;
 }
 
 export interface CaseAnalysisResult {
   caseId: string;
+  disputeType?: string;
+  customerClaim?: string;
+  merchantEvidence?: string;
   decision: DisputeDecision;
   recommendation: string;
   confidence: number;
   evidence_to_submit: string[];
+  strong_evidence?: string[];
+  weak_evidence?: string[];
+  missing_evidence?: string[];
+  hasExplicitEvidenceCategories: boolean;
   reasoning: string;
   memory_used: boolean;
+  memory_used_summary?: string;
+  /** Raw recalled memory entries returned by Hindsight (preserved intact) */
   recalled_memories: string[];
+  /** Consolidated unique historical precedents (excluding current Case ID) */
+  historicalPrecedents: ConsolidatedPrecedent[];
+  /** Top 3–5 most relevant unique historical precedents to display */
+  displayedPrecedents: ConsolidatedPrecedent[];
+  /** Consolidated memory entries matching the current Case ID (excluded from historical precedents) */
+  excludedCurrentCasePrecedents: ConsolidatedPrecedent[];
+  /** Total unique Case IDs after grouping recalled memories */
+  uniquePrecedentsCount: number;
+  /** Count of unique prior historical precedents excluding current Case ID */
+  historicalPrecedentsCount: number;
+  /** Structured Evidence Intelligence (Available, Missing/Weak, Recommended, Impact, Hindsight Gap, Coverage) */
+  evidenceIntelligence: EvidenceIntelligenceData;
+  evidence_strategy?: string;
   recommendedEvidence: EvidenceItem[];
   hindsightMemoryUsed: MemoryEntry[];
   improvedByMemory: boolean;
   analyzedAt: string;
-  previous_outcome?: string | null;
-  isDemo?: boolean;
+  // Optional fields for "Memory Impact" & "DecisionCard" (WITHOUT HINDSIGHT vs WITH HINDSIGHT)
+  baseline_recommendation?: string;
+  baseline_confidence?: number;
+  baseline_reasoning?: string;
+  baseline_comparison?: string;
+  baseline_comparison_status?: 'available' | 'unavailable';
+  hindsight_recommendation?: string;
+  hindsight_confidence?: number;
+  hindsight_reasoning?: string;
+  previous_outcome?: string;
+  relevant_precedent?: string;
+  key_lesson?: string;
 }
 
 export interface ChargebackCase {
@@ -56,13 +98,29 @@ export interface ChargebackCase {
   customerClaim: string;
   merchantEvidence: string;
   decision: DisputeDecision;
+  recommendation: string;
   confidence: number;
   outcome: CaseOutcome;
+  outcomeRecorded: boolean;
   actualResult?: string;
   lessonRetained?: string;
   submittedAt: string;
   analysis: CaseAnalysisResult;
-  isDemo?: boolean;
+  /** Explicitly marks synthetic demonstration cases vs live analyzed cases */
+  isSyntheticDemo?: boolean;
+}
+
+export interface RecordedOutcome {
+  id: string;
+  caseId: string;
+  disputeType?: string;
+  predictedRecommendation?: string;
+  outcome: 'WON' | 'LOST';
+  actualResult: string;
+  lesson: string;
+  recordedAt: string;
+  /** Explicitly marks synthetic demonstration outcomes */
+  isSyntheticDemo?: boolean;
 }
 
 export interface CaseFormInput {
@@ -78,4 +136,21 @@ export interface OutcomeFormInput {
   outcome: 'LOST' | 'WON';
   actualResult: string;
   lesson: string;
+}
+
+export type ConnectionState = 'checking' | 'connected' | 'disconnected';
+
+export interface HealthStatusResponse {
+  status: string;
+  hindsight?: {
+    status: 'connected' | 'disconnected' | 'unavailable';
+    detail?: string;
+  };
+}
+
+export interface ToastNotification {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message: string;
 }
