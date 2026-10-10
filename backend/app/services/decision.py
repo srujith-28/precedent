@@ -1,7 +1,7 @@
 def make_decision(case, memories):
     memory_text = " ".join(
-        memory.text.lower()
-        for memory in memories.results
+        getattr(memory, "text", str(memory)).lower()
+        for memory in getattr(memories, "results", [])
     )
 
     evidence = []

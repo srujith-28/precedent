@@ -1,304 +1,227 @@
 import os
-import time
-import json
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
+import stripe
 from dotenv import load_dotenv
+
+from app.services.event_store import (
+    get_event_count,
+    record_event_atomically,
+    upsert_dispute_record,
+    upsert_payment_record,
+)
 
 load_dotenv()
 
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+SUPPORTED_EVENT_TYPES = {
+    "payment_intent.succeeded",
+    "payment_intent.payment_failed",
+    "charge.dispute.created",
+    "charge.dispute.closed",
+}
 
-# In-memory sandbox storage for Stripe test mode records and webhook events
-PROCESSED_EVENT_IDS: set = set()
-WEBHOOK_EVENT_LOG: List[Dict[str, Any]] = []
 
-# Initial test mode data (clearly marked as sandbox data)
-INITIAL_TEST_PAYMENTS: List[Dict[str, Any]] = [
-    {
-        "id": "pi_3Ptest001SubCapture",
-        "amount": 149.00,
-        "amount_cents": 14900,
-        "currency": "usd",
-        "status": "succeeded",
-        "created": int(time.time()) - 86400 * 4,
-        "customer_id": "cus_test_alex_99",
-        "customer_email": "alex.m@example.com",
-        "customer_name": "Alex Mercer",
-        "description": "CloudPro Annual SaaS Tier Renewal",
-        "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_001",
-        "card_brand": "Visa",
-        "card_last4": "4242",
-        "disputed": True,
-        "dispute_id": "dp_1Ptest_sub_cancellation_001",
-        "radar_risk_score": 12,
-        "radar_risk_level": "normal",
-        "is_sandbox": True,
-    },
-    {
-        "id": "pi_3Ptest002DeviceDelivery",
-        "amount": 420.00,
-        "amount_cents": 42000,
-        "currency": "usd",
-        "status": "succeeded",
-        "created": int(time.time()) - 86400 * 6,
-        "customer_id": "cus_test_elena_44",
-        "customer_email": "elena.k@example.com",
-        "customer_name": "Elena Kovacs",
-        "description": "Hardware Security Key Enterprise Pack (2x)",
-        "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_002",
-        "card_brand": "Mastercard",
-        "card_last4": "5556",
-        "disputed": True,
-        "dispute_id": "dp_1Ptest_pnr_delivery_002",
-        "radar_risk_score": 25,
-        "radar_risk_level": "normal",
-        "is_sandbox": True,
-    },
-    {
-        "id": "pi_3Ptest003FraudClaim",
-        "amount": 290.00,
-        "amount_cents": 29000,
-        "currency": "usd",
-        "status": "succeeded",
-        "created": int(time.time()) - 86400 * 2,
-        "customer_id": "cus_test_jordan_12",
-        "customer_email": "jordan.b@example.com",
-        "customer_name": "Jordan Bell",
-        "description": "API Seat Add-on License",
-        "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_003",
-        "card_brand": "Visa",
-        "card_last4": "1881",
-        "disputed": True,
-        "dispute_id": "dp_1Ptest_fraud_account_003",
-        "radar_risk_score": 68,
-        "radar_risk_level": "elevated",
-        "is_sandbox": True,
-    },
-    {
-        "id": "pi_3Ptest004ActiveGood",
-        "amount": 89.00,
-        "amount_cents": 8900,
-        "currency": "usd",
-        "status": "succeeded",
-        "created": int(time.time()) - 86400 * 1,
-        "customer_id": "cus_test_sara_88",
-        "customer_email": "sara.t@example.com",
-        "customer_name": "Sara Tanaka",
-        "description": "Monthly Workspace Seat Tier",
-        "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_004",
-        "card_brand": "Amex",
-        "card_last4": "0005",
-        "disputed": False,
-        "dispute_id": None,
-        "radar_risk_score": 4,
-        "radar_risk_level": "normal",
-        "is_sandbox": True,
-    },
-]
+def get_stripe_secret_key() -> str:
+    key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    return key
 
-INITIAL_TEST_DISPUTES: List[Dict[str, Any]] = [
-    {
-        "id": "dp_1Ptest_sub_cancellation_001",
-        "amount": 149.00,
-        "amount_cents": 14900,
-        "currency": "usd",
-        "reason": "subscription_canceled",
-        "status": "needs_response",
-        "created": int(time.time()) - 86400 * 2,
-        "evidence_due_by": int(time.time()) + 86400 * 12,
-        "charge_id": "ch_3Ptest001SubCapture",
-        "payment_intent_id": "pi_3Ptest001SubCapture",
-        "is_sandbox": True,
-        "customer_claim": "Cardholder claims they canceled subscription prior to renewal and requested refund through email.",
-        "connected_evidence": {
-            "card_brand": "Visa",
-            "card_last4": "4242",
-            "card_funding": "credit",
-            "card_country": "US",
-            "billing_postal_code": "94107",
-            "avs_postal_match": True,
-            "cvc_check": "pass",
-            "customer_email": "alex.m@example.com",
-            "customer_name": "Alex Mercer",
-            "customer_purchase_ip": "198.51.100.42",
-            "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_001",
-            "payment_created": int(time.time()) - 86400 * 4,
-            "product_description": "CloudPro Annual SaaS Tier Renewal",
-            "subscription_interval": "year",
-            "service_start_date": "2025-10-01",
-            "prior_transactions_count": 2,
-            "radar_risk_score": 12,
-            "radar_risk_level": "normal",
-        },
-        "missing_evidence_from_sources": [
-            "Customer support chat log / email correspondence verifying cancellation request timing",
-            "Cancellation terms acknowledgment during signup / checkout click-wrap",
-            "Account login audit logs proving active software consumption after alleged cancellation date",
-        ],
-        "merchant_supplied_evidence": "Automated renewal receipt and billing invoice. Terms of Service URL attached.",
-        "represented": False,
-        "represented_at": None,
-        "outcome_recorded": False,
-        "final_outcome": None,
-        "actual_result": None,
-        "lesson_learned": None,
-        "hindsight_analysis": None,
-    },
-    {
-        "id": "dp_1Ptest_pnr_delivery_002",
-        "amount": 420.00,
-        "amount_cents": 42000,
-        "currency": "usd",
-        "reason": "product_not_received",
-        "status": "needs_response",
-        "created": int(time.time()) - 86400 * 3,
-        "evidence_due_by": int(time.time()) + 86400 * 9,
-        "charge_id": "ch_3Ptest002DeviceDelivery",
-        "payment_intent_id": "pi_3Ptest002DeviceDelivery",
-        "is_sandbox": True,
-        "customer_claim": "Cardholder states physical security keys package never arrived at their shipping address.",
-        "connected_evidence": {
-            "card_brand": "Mastercard",
-            "card_last4": "5556",
-            "card_funding": "credit",
-            "card_country": "US",
-            "billing_postal_code": "10001",
-            "avs_postal_match": True,
-            "cvc_check": "pass",
-            "customer_email": "elena.k@example.com",
-            "customer_name": "Elena Kovacs",
-            "customer_purchase_ip": "203.0.113.19",
-            "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_002",
-            "payment_created": int(time.time()) - 86400 * 6,
-            "product_description": "Hardware Security Key Enterprise Pack (2x)",
-            "subscription_interval": "one_time",
-            "prior_transactions_count": 0,
-            "radar_risk_score": 25,
-            "radar_risk_level": "normal",
-        },
-        "missing_evidence_from_sources": [
-            "Carrier tracking number and delivery GPS / photo confirmation showing delivery to customer address",
-            "Customer signature upon physical package receipt",
-        ],
-        "merchant_supplied_evidence": "Warehouse shipping manifest and FedEx tracking number 7948291039.",
-        "represented": False,
-        "represented_at": None,
-        "outcome_recorded": False,
-        "final_outcome": None,
-        "actual_result": None,
-        "lesson_learned": None,
-        "hindsight_analysis": None,
-    },
-    {
-        "id": "dp_1Ptest_fraud_account_003",
-        "amount": 290.00,
-        "amount_cents": 29000,
-        "currency": "usd",
-        "reason": "fraudulent",
-        "status": "needs_response",
-        "created": int(time.time()) - 86400 * 1,
-        "evidence_due_by": int(time.time()) + 86400 * 14,
-        "charge_id": "ch_3Ptest003FraudClaim",
-        "payment_intent_id": "pi_3Ptest003FraudClaim",
-        "is_sandbox": True,
-        "customer_claim": "Cardholder asserts this transaction was unauthorized and their card credentials were compromised.",
-        "connected_evidence": {
-            "card_brand": "Visa",
-            "card_last4": "1881",
-            "card_funding": "credit",
-            "card_country": "US",
-            "billing_postal_code": "60601",
-            "avs_postal_match": False,
-            "cvc_check": "pass",
-            "customer_email": "jordan.b@example.com",
-            "customer_name": "Jordan Bell",
-            "customer_purchase_ip": "198.51.100.99",
-            "receipt_url": "https://pay.stripe.com/receipts/test_rcpt_003",
-            "payment_created": int(time.time()) - 86400 * 2,
-            "product_description": "API Seat Add-on License",
-            "subscription_interval": "month",
-            "prior_transactions_count": 1,
-            "radar_risk_score": 68,
-            "radar_risk_level": "elevated",
-        },
-        "missing_evidence_from_sources": [
-            "Cardholder device fingerprint matching historical legitimate sessions",
-            "2-Factor Authentication (2FA) verification timestamp log",
-            "IP geolocation matching known cardholder billing address",
-        ],
-        "merchant_supplied_evidence": "API token generation logs showing usage 10 minutes post-checkout.",
-        "represented": False,
-        "represented_at": None,
-        "outcome_recorded": False,
-        "final_outcome": None,
-        "actual_result": None,
-        "lesson_learned": None,
-        "hindsight_analysis": None,
-    },
-]
 
-# Mutable store for the active session
-test_payments_store = list(INITIAL_TEST_PAYMENTS)
-test_disputes_store = list(INITIAL_TEST_DISPUTES)
+def get_stripe_webhook_secret() -> str:
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+    return secret
+
+
+def init_stripe_client() -> stripe:
+    key = get_stripe_secret_key()
+    if not key:
+        raise ValueError("STRIPE_SECRET_KEY is not configured")
+    stripe.api_key = key
+    return stripe
 
 
 def get_stripe_status() -> Dict[str, Any]:
-    has_secret_key = bool(STRIPE_SECRET_KEY and STRIPE_SECRET_KEY.startswith("sk_test_"))
-    has_webhook_secret = bool(STRIPE_WEBHOOK_SECRET and STRIPE_WEBHOOK_SECRET.startswith("whsec_"))
+    key = get_stripe_secret_key()
+    wh_secret = get_stripe_webhook_secret()
 
-    mode = "test_live_key" if has_secret_key else "test_sandbox_fallback"
-
-    needs_response_count = sum(
-        1 for d in test_disputes_store if d.get("status") in ("needs_response", "warning_needs_response")
-    )
+    configured = bool(key)
+    mode = "unconfigured"
+    if key.startswith("sk_test_"):
+        mode = "test"
+    elif key.startswith("sk_live_"):
+        mode = "live"
+    elif configured:
+        mode = "custom"
 
     return {
-        "connected": has_secret_key or True,  # Available in test sandbox or live test key
+        "connected": configured,
         "mode": mode,
-        "livemode": False,
-        "secret_key_configured": has_secret_key,
-        "webhook_secret_configured": has_webhook_secret,
-        "key_prefix": STRIPE_SECRET_KEY[:12] + "..." if has_secret_key else "sandbox_demo",
-        "total_payments": len(test_payments_store),
-        "total_disputes": len(test_disputes_store),
-        "needs_response_count": needs_response_count,
-        "webhook_events_count": len(WEBHOOK_EVENT_LOG),
-        "message": (
-            "Connected to Stripe Test Mode via API Key"
-            if has_secret_key
-            else "Running in Stripe Sandbox Test Mode (Set STRIPE_SECRET_KEY in environment for live Stripe API connection)"
-        ),
+        "secret_key_configured": configured,
+        "webhook_secret_configured": bool(wh_secret),
+        "total_events_processed": get_event_count(),
     }
 
 
-def list_stripe_payments() -> List[Dict[str, Any]]:
-    return sorted(test_payments_store, key=lambda x: x.get("created", 0), reverse=True)
+def list_stripe_payments(limit: int = 20) -> List[Dict[str, Any]]:
+    client = init_stripe_client()
+    try:
+        payment_intents = client.PaymentIntent.list(limit=limit)
+        results = []
+        for pi in payment_intents.auto_paging_iter() if hasattr(payment_intents, "auto_paging_iter") else payment_intents.get("data", []):
+            results.append({
+                "id": pi.get("id"),
+                "amount": pi.get("amount", 0) / 100.0 if pi.get("amount") is not None else None,
+                "amount_cents": pi.get("amount"),
+                "currency": pi.get("currency"),
+                "status": pi.get("status"),
+                "created": pi.get("created"),
+                "customer": pi.get("customer"),
+                "description": pi.get("description"),
+            })
+            if len(results) >= limit:
+                break
+        return results
+    except Exception as e:
+        raise RuntimeError(f"Stripe API error listing payments: {str(e)}")
 
 
-def list_stripe_disputes() -> List[Dict[str, Any]]:
-    return sorted(test_disputes_store, key=lambda x: x.get("created", 0), reverse=True)
+def list_stripe_disputes(limit: int = 20) -> List[Dict[str, Any]]:
+    client = init_stripe_client()
+    try:
+        disputes = client.Dispute.list(limit=limit)
+        results = []
+        dispute_list = disputes.get("data", []) if isinstance(disputes, dict) or hasattr(disputes, "get") else getattr(disputes, "data", [])
+        for d in dispute_list:
+            results.append({
+                "id": d.get("id"),
+                "amount": d.get("amount", 0) / 100.0 if d.get("amount") is not None else None,
+                "amount_cents": d.get("amount"),
+                "currency": d.get("currency"),
+                "status": d.get("status"),
+                "reason": d.get("reason"),
+                "charge": d.get("charge"),
+                "payment_intent": d.get("payment_intent"),
+                "created": d.get("created"),
+                "evidence_due_by": d.get("evidence_details", {}).get("due_by") if d.get("evidence_details") else None,
+            })
+            if len(results) >= limit:
+                break
+        return results
+    except Exception as e:
+        raise RuntimeError(f"Stripe API error listing disputes: {str(e)}")
 
 
-def get_stripe_dispute(dispute_id: str) -> Optional[Dict[str, Any]]:
-    for d in test_disputes_store:
-        if d.get("id") == dispute_id:
-            return d
-    return None
+def get_stripe_dispute(dispute_id: str) -> Dict[str, Any]:
+    client = init_stripe_client()
+    try:
+        d = client.Dispute.retrieve(dispute_id)
+        return {
+            "id": d.get("id"),
+            "amount": d.get("amount", 0) / 100.0 if d.get("amount") is not None else None,
+            "amount_cents": d.get("amount"),
+            "currency": d.get("currency"),
+            "status": d.get("status"),
+            "reason": d.get("reason"),
+            "charge": d.get("charge"),
+            "payment_intent": d.get("payment_intent"),
+            "created": d.get("created"),
+            "evidence_due_by": d.get("evidence_details", {}).get("due_by") if d.get("evidence_details") else None,
+            "evidence": d.get("evidence"),
+        }
+    except stripe.InvalidRequestError:
+        raise KeyError(f"Dispute {dispute_id} not found on Stripe")
+    except Exception as e:
+        raise RuntimeError(f"Stripe API error retrieving dispute: {str(e)}")
 
 
-def record_webhook_event(event_id: str, event_type: str, verified: bool, summary: str, data_id: str) -> Dict[str, Any]:
-    entry = {
-        "id": event_id,
-        "type": event_type,
-        "created": int(time.time()),
-        "livemode": False,
-        "verified": bool(verified),
-        "signature_checked": bool(verified),
+def to_clean_dict(obj: Any) -> Any:
+    if hasattr(obj, "to_dict_recursive"):
+        return obj.to_dict_recursive()
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if isinstance(obj, dict):
+        return {k: to_clean_dict(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [to_clean_dict(i) for i in obj]
+    return obj
+
+
+def process_webhook_event_payload(event: Any) -> Dict[str, Any]:
+    """
+    Processes an authenticated Stripe event dictionary.
+    Guarantees idempotency via durable SQLite store.
+    Extracts available data safely without hallucinating missing fields.
+    Does NOT call Hindsight or automatically submit dispute representment.
+    """
+    event_dict = to_clean_dict(event) if not isinstance(event, dict) else event
+
+    event_id = event_dict.get("id")
+    event_type = event_dict.get("type", "unknown")
+    created_at = event_dict.get("created")
+    data_object = event_dict.get("data", {}).get("object", {})
+    if not isinstance(data_object, dict) and hasattr(data_object, "to_dict"):
+        data_object = data_object.to_dict()
+    data_object_id = data_object.get("id")
+
+    summary = f"Received Stripe event {event_type} for object {data_object_id}"
+    if event_type == "payment_intent.succeeded":
+        amt = data_object.get("amount")
+        curr = data_object.get("currency", "").upper()
+        summary = f"PaymentIntent {data_object_id} succeeded ({amt / 100.0 if amt else 0:.2f} {curr})"
+    elif event_type == "payment_intent.payment_failed":
+        summary = f"PaymentIntent {data_object_id} failed"
+    elif event_type == "charge.dispute.created":
+        reason = data_object.get("reason")
+        summary = f"Dispute {data_object_id} created (reason: {reason})"
+    elif event_type == "charge.dispute.closed":
+        status = data_object.get("status")
+        summary = f"Dispute {data_object_id} closed with status: {status}"
+
+    # Atomic durable idempotency check & record
+    is_new = record_event_atomically(
+        event_id=event_id,
+        event_type=event_type,
+        created_at=created_at,
+        data_object_id=data_object_id,
+        status="processed",
+        summary=summary,
+        payload=event_dict,
+    )
+
+    if not is_new:
+        return {
+            "status": "duplicate_skipped",
+            "event_id": event_id,
+            "event_type": event_type,
+            "message": "Webhook event was already processed idempotently.",
+        }
+
+    # Extract and persist business entities to durable store
+    if event_type in ("payment_intent.succeeded", "payment_intent.payment_failed"):
+        upsert_payment_record(
+            payment_id=data_object_id,
+            amount=data_object.get("amount"),
+            currency=data_object.get("currency"),
+            status=data_object.get("status"),
+            customer_id=data_object.get("customer"),
+            created_at=data_object.get("created"),
+            payload=data_object,
+        )
+    elif event_type in ("charge.dispute.created", "charge.dispute.closed"):
+        upsert_dispute_record(
+            dispute_id=data_object_id,
+            amount=data_object.get("amount"),
+            currency=data_object.get("currency"),
+            status=data_object.get("status"),
+            reason=data_object.get("reason"),
+            charge_id=data_object.get("charge"),
+            payment_intent_id=data_object.get("payment_intent"),
+            created_at=data_object.get("created"),
+            payload=data_object,
+        )
+
+    return {
         "status": "processed",
+        "event_id": event_id,
+        "event_type": event_type,
         "summary": summary,
-        "data_object_id": data_id,
+        "data_object_id": data_object_id,
     }
-    WEBHOOK_EVENT_LOG.insert(0, entry)
-    PROCESSED_EVENT_IDS.add(event_id)
-    return entry

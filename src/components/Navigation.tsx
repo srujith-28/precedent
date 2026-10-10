@@ -214,7 +214,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
-            const badgeCount = item.badgeKey ? counts[item.badgeKey] : 0;
+            const badgeCount = (item.badgeKey ? counts[item.badgeKey] : 0) ?? 0;
 
             return (
               <button
@@ -445,7 +445,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeTab === item.id;
-                const badgeCount = item.badgeKey ? counts[item.badgeKey] : 0;
+                const badgeCount = (item.badgeKey ? counts[item.badgeKey] : 0) ?? 0;
 
                 return (
                   <button

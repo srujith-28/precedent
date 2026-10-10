@@ -2,29 +2,26 @@ import json
 import os
 
 from dotenv import load_dotenv
-from groq import Groq
 
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is not set")
-
-client = Groq(api_key=GROQ_API_KEY)
+client = None
+if GROQ_API_KEY:
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+    except Exception:
+        client = None
 
 
 def parse_groq_json(content: str) -> dict:
-    """
-    Safely parse JSON from Groq response, handling markdown fences,
-    extraneous text, and returning a structured fallback if decoding fails.
-    """
     if not content or not isinstance(content, str):
         return {}
 
     cleaned = content.strip()
 
-    # Strip markdown code blocks (e.g. ```json ... ```)
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         if lines[0].startswith("```"):
@@ -40,7 +37,6 @@ def parse_groq_json(content: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Fallback: locate first { and last }
     start_idx = cleaned.find("{")
     end_idx = cleaned.rfind("}")
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
@@ -61,10 +57,12 @@ def parse_groq_json(content: str) -> dict:
 
 
 def generate_decision(case, memories) -> dict:
+    if not client:
+        raise ValueError("GROQ_API_KEY is not set or client unavailable")
 
     precedent_text = "\n\n".join(
-        f"[{memory.type}] {memory.text}"
-        for memory in memories.results
+        f"[{getattr(memory, 'type', 'precedent')}] {getattr(memory, 'text', str(memory))}"
+        for memory in getattr(memories, "results", [])
     )
 
     prompt = f"""

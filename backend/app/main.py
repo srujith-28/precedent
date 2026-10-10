@@ -1,17 +1,41 @@
+import os
 import re
-from fastapi import FastAPI
-from pydantic import BaseModel
+from typing import Optional
+from contextlib import asynccontextmanager
 
-from app.services.hindsight import recall_memories, retain_memory
-from app.services.decision import make_decision
-from app.services.groq import generate_decision
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import stripe
+
+from app.services.decision import make_decision
+from app.services.event_store import init_db, list_webhook_events
+from app.services.groq import generate_decision
+from app.services.hindsight import recall_memories, retain_memory
+from app.services.stripe_service import (
+    get_stripe_dispute,
+    get_stripe_secret_key,
+    get_stripe_status,
+    get_stripe_webhook_secret,
+    list_stripe_disputes,
+    list_stripe_payments,
+    process_webhook_event_payload,
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
 
 app = FastAPI(
     title="Precedent API",
     description="AI-powered chargeback intelligence agent",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,11 +51,14 @@ class ChargebackCase(BaseModel):
     amount: float
     customer_claim: str
     merchant_evidence: str
+
+
 class ChargebackOutcome(BaseModel):
     case_id: str
     outcome: str
     actual_result: str
     lesson: str
+
 
 @app.get("/")
 def root():
@@ -49,7 +76,6 @@ def health():
 
 @app.post("/analyze")
 def analyze_case(case: ChargebackCase):
-
     query = f"""
     Chargeback dispute:
     Type: {case.dispute_type}
@@ -119,7 +145,6 @@ def analyze_case(case: ChargebackCase):
         "dispute_type": case.dispute_type,
         "amount": case.amount,
         "decision": decision_payload,
-        # Preserve top-level fields for direct access and backward compatibility
         "recommendation": decision_payload["recommendation"],
         "confidence": decision_payload["confidence"],
         "reasoning": decision_payload["reasoning"],
@@ -129,17 +154,16 @@ def analyze_case(case: ChargebackCase):
         "previous_outcome": previous_outcome,
         "memories": [
             {
-                "type": memory.type,
-                "text": memory.text,
+                "type": getattr(memory, "type", "precedent"),
+                "text": getattr(memory, "text", str(memory)),
             }
-            for memory in memories.results
-        ]
-        if hasattr(memories, "results") and memories.results
-        else [],
+            for memory in getattr(memories, "results", [])
+        ],
     }
+
+
 @app.post("/outcome")
 def record_outcome(outcome: ChargebackOutcome):
-
     memory = f"""
     Precedent chargeback outcome:
 
@@ -152,7 +176,7 @@ def record_outcome(outcome: ChargebackOutcome):
     chargeback decisions.
     """
 
-    result = retain_memory(memory)
+    retain_memory(memory)
 
     return {
         "status": "stored",
@@ -162,21 +186,63 @@ def record_outcome(outcome: ChargebackOutcome):
 
 
 # ============================================================================
-# Stripe Payment Dispute Intelligence & Webhook Endpoints
+# Stripe Webhook & Test-Mode Integration
 # ============================================================================
-from fastapi import Request, HTTPException, Header
-from app.services.stripe_service import (
-    get_stripe_status,
-    list_stripe_payments,
-    list_stripe_disputes,
-    get_stripe_dispute,
-    record_webhook_event,
-    PROCESSED_EVENT_IDS,
-    WEBHOOK_EVENT_LOG,
-    test_disputes_store,
-    test_payments_store,
-    STRIPE_WEBHOOK_SECRET,
-)
+
+async def handle_stripe_webhook_request(
+    request: Request,
+    stripe_signature: Optional[str],
+):
+    webhook_secret = get_stripe_webhook_secret()
+    if not webhook_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="STRIPE_WEBHOOK_SECRET is not configured on the server",
+        )
+
+    if not stripe_signature:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing Stripe-Signature header",
+        )
+
+    raw_body = await request.body()
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=raw_body,
+            sig_header=stripe_signature,
+            secret=webhook_secret,
+        )
+    except stripe.SignatureVerificationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Webhook signature verification failed: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to parse webhook payload: {str(e)}",
+        )
+
+    result = process_webhook_event_payload(event)
+    return result
+
+
+@app.post("/webhook/stripe")
+async def stripe_webhook_endpoint(
+    request: Request,
+    stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
+):
+    return await handle_stripe_webhook_request(request, stripe_signature)
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook_alias_endpoint(
+    request: Request,
+    stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
+):
+    return await handle_stripe_webhook_request(request, stripe_signature)
 
 
 @app.get("/stripe/status")
@@ -185,147 +251,68 @@ def stripe_status():
 
 
 @app.get("/stripe/payments")
-def stripe_payments():
-    return {
-        "payments": list_stripe_payments(),
-        "total": len(test_payments_store),
-        "is_sandbox": True,
-    }
+def stripe_payments(limit: int = 20):
+    if not get_stripe_secret_key():
+        raise HTTPException(
+            status_code=503,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
+    try:
+        payments = list_stripe_payments(limit=limit)
+        return {
+            "payments": payments,
+            "total": len(payments),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error retrieving Stripe payments: {str(e)}",
+        )
 
 
 @app.get("/stripe/disputes")
-def stripe_disputes():
-    return {
-        "disputes": list_stripe_disputes(),
-        "total": len(test_disputes_store),
-        "is_sandbox": True,
-    }
+def stripe_disputes(limit: int = 20):
+    if not get_stripe_secret_key():
+        raise HTTPException(
+            status_code=503,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
+    try:
+        disputes = list_stripe_disputes(limit=limit)
+        return {
+            "disputes": disputes,
+            "total": len(disputes),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error retrieving Stripe disputes: {str(e)}",
+        )
 
 
 @app.get("/stripe/disputes/{dispute_id}")
 def stripe_dispute_detail(dispute_id: str):
-    dispute = get_stripe_dispute(dispute_id)
-    if not dispute:
-        raise HTTPException(status_code=404, detail="Dispute not found")
-    return dispute
-
-
-@app.post("/stripe/disputes/{dispute_id}/analyze")
-def analyze_stripe_dispute(dispute_id: str):
-    dispute = get_stripe_dispute(dispute_id)
-    if not dispute:
-        raise HTTPException(status_code=404, detail="Dispute not found")
-
-    reason_clean = dispute.get("reason", "Subscription").replace("_", " ").title()
-    customer_claim = dispute.get("customer_claim", "")
-    connected = dispute.get("connected_evidence", {})
-    card_info = f"{connected.get('card_brand', 'Card')} •••• {connected.get('card_last4', '0000')}"
-    avs_info = "AVS Postal match verified" if connected.get("avs_postal_match") else "AVS postal mismatch"
-    cvc_info = f"CVC: {connected.get('cvc_check', 'unknown')}"
-    ip_info = f"Purchase IP: {connected.get('customer_purchase_ip', 'unknown')}"
-
-    merchant_evidence = (
-        f"Stripe payment verified ({card_info}, {avs_info}, {cvc_info}, {ip_info}). "
-        f"Receipt: {connected.get('receipt_url', 'on file')}. "
-        f"Merchant documentation: {dispute.get('merchant_supplied_evidence', 'Standard billing capture')}"
-    )
-
-    case_obj = ChargebackCase(
-        case_id=dispute.get("id"),
-        dispute_type=reason_clean,
-        amount=float(dispute.get("amount", 0.0)),
-        customer_claim=customer_claim,
-        merchant_evidence=merchant_evidence,
-    )
-
-    analysis_res = analyze_case(case_obj)
-    dispute["hindsight_analysis"] = analysis_res
-    return analysis_res
-
-
-class StripeDisputeOutcomeInput(BaseModel):
-    outcome: str  # WON or LOST
-    actual_result: str
-    lesson: str
-
-
-@app.post("/stripe/disputes/{dispute_id}/outcome")
-def record_stripe_dispute_outcome(dispute_id: str, body: StripeDisputeOutcomeInput):
-    dispute = get_stripe_dispute(dispute_id)
-    if not dispute:
-        raise HTTPException(status_code=404, detail="Dispute not found")
-
-    # Retain lesson in Hindsight
-    outcome_payload = ChargebackOutcome(
-        case_id=dispute_id,
-        outcome=body.outcome.upper(),
-        actual_result=body.actual_result,
-        lesson=body.lesson,
-    )
-    retain_res = record_outcome(outcome_payload)
-
-    dispute["outcome_recorded"] = True
-    dispute["final_outcome"] = body.outcome.lower()
-    dispute["status"] = "won" if body.outcome.upper() == "WON" else "lost"
-    dispute["actual_result"] = body.actual_result
-    dispute["lesson_learned"] = body.lesson
-
-    return {
-        "status": "stored",
-        "dispute_id": dispute_id,
-        "dispute_status": dispute["status"],
-        "hindsight": retain_res,
-        "message": f"Dispute outcome recorded and retained in Hindsight.",
-    }
-
-
-@app.post("/stripe/webhook")
-async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(None)):
-    raw_body = await request.body()
+    if not get_stripe_secret_key():
+        raise HTTPException(
+            status_code=503,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
     try:
-        event = json.loads(raw_body)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
-
-    event_id = event.get("id", f"evt_sim_{int(time.time())}")
-    event_type = event.get("type", "unknown")
-
-    # Idempotency check: prevent duplicate event processing & duplicate Hindsight writes
-    if event_id in PROCESSED_EVENT_IDS:
-        return {
-            "status": "duplicate_skipped",
-            "event_id": event_id,
-            "message": "Event already processed idempotently.",
-        }
-
-    verified = False
-    if STRIPE_WEBHOOK_SECRET and stripe_signature:
-        try:
-            import stripe
-            stripe.Webhook.construct_event(raw_body, stripe_signature, STRIPE_WEBHOOK_SECRET)
-            verified = True
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {str(e)}")
-
-    data_object = event.get("data", {}).get("object", {})
-    data_id = data_object.get("id", "")
-    summary = f"Processed {event_type} event for object {data_id}"
-
-    # Handle dispute events
-    if event_type == "charge.dispute.created":
-        dispute_id = data_object.get("id", f"dp_wh_{int(time.time())}")
-        summary = f"New dispute {dispute_id} created"
-    elif event_type == "charge.dispute.closed":
-        status = data_object.get("status", "")
-        summary = f"Dispute closed with status: {status}"
-
-    record = record_webhook_event(event_id, event_type, verified, summary, data_id)
-    return {"status": "success", "event": record}
+        return get_stripe_dispute(dispute_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dispute {dispute_id} not found",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error retrieving dispute from Stripe: {str(e)}",
+        )
 
 
 @app.get("/stripe/webhooks")
-def list_stripe_webhooks():
+def stripe_webhooks_history(limit: int = 50):
     return {
-        "webhooks": WEBHOOK_EVENT_LOG,
-        "total": len(WEBHOOK_EVENT_LOG),
+        "webhooks": list_webhook_events(limit=limit),
     }
