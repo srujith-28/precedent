@@ -5,6 +5,7 @@ export type NavigationTab =
   | 'overview'
   | 'disputes'
   | 'payments'
+  | 'checkout'
   | 'analyze'
   | 'history'
   | 'learning-chain'

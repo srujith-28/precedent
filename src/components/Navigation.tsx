@@ -13,6 +13,7 @@ import {
   Play,
   RefreshCw,
   ShieldAlert,
+  Smartphone,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -61,6 +62,12 @@ const NAV_ITEMS: {
     tooltip: 'Captured Stripe test payments, customer references, and transaction risks',
     icon: CreditCard,
     badgeKey: 'payments',
+  },
+  {
+    id: 'checkout',
+    label: 'Google Pay Checkout',
+    tooltip: 'Test customer payment checkout with Google Pay and Stripe Test Mode',
+    icon: Smartphone,
   },
   {
     id: 'analyze',
@@ -334,6 +341,21 @@ export const Navigation: React.FC<NavigationProps> = ({
           </button>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => handleNavClick('checkout')}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                activeTab === 'checkout'
+                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/50 shadow-sm'
+                  : 'bg-slate-900/90 text-slate-200 hover:text-white hover:bg-slate-800 border border-slate-700/80'
+              }`}
+              title="Open Google Pay Checkout"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-teal-400" />
+              <span className="hidden sm:inline">Google Pay Checkout</span>
+              <span className="sm:hidden">Checkout</span>
+            </button>
+
             <div className="hidden sm:flex items-center gap-3 text-[11px] font-mono text-slate-300 bg-[#0C1322] border border-slate-800 px-2.5 py-1 rounded-md">
               <span className="flex items-center gap-1.5">
                 <StatusDot status={backendStatus} />

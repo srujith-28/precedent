@@ -119,3 +119,107 @@ export async function createTestDispute(params: {
     body: JSON.stringify(params),
   });
 }
+
+export interface StripeConfigResponse {
+  publishable_key: string;
+  publishable_key_configured: boolean;
+  mode: string;
+  google_pay_supported: boolean;
+  connected: boolean;
+}
+
+export function isValidStripePublishableKey(key?: string | null): boolean {
+  if (!key) return false;
+  const trimmed = key.trim();
+  if (trimmed.length < 20) return false;
+  if (trimmed.includes('your_stripe') || trimmed.includes('placeholder') || trimmed.includes('sample')) {
+    return false;
+  }
+  return trimmed.startsWith('pk_test_') || trimmed.startsWith('pk_live_');
+}
+
+/**
+ * Authoritatively reads the Stripe publishable key from frontend environment variables.
+ * In Vite applications, client-facing environment variables are prefixed with VITE_.
+ */
+export function getFrontendStripePublishableKey(): string {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      const viteKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+      if (isValidStripePublishableKey(viteKey)) {
+        return String(viteKey).trim();
+      }
+      const rawEnv = import.meta.env as Record<string, string | undefined>;
+      if (isValidStripePublishableKey(rawEnv.STRIPE_PUBLISHABLE_KEY)) {
+        return String(rawEnv.STRIPE_PUBLISHABLE_KEY).trim();
+      }
+    }
+  } catch {
+    // Continue fallback
+  }
+
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      if (isValidStripePublishableKey(process.env.VITE_STRIPE_PUBLISHABLE_KEY)) {
+        return String(process.env.VITE_STRIPE_PUBLISHABLE_KEY).trim();
+      }
+      if (isValidStripePublishableKey(process.env.STRIPE_PUBLISHABLE_KEY)) {
+        return String(process.env.STRIPE_PUBLISHABLE_KEY).trim();
+      }
+    }
+  } catch {
+    // Continue fallback
+  }
+
+  // Authoritative Stripe Test Mode publishable key for this workspace
+  return 'pk_test_51UOthHHoPoB7rpEf5boSwkDVop1DAuTu7n334lhmFuuJ3BV6WrhKhKj4dkV0BvrbAVh047gYyWtSkPNmgqWMHd9k00cR1YapWo';
+}
+
+export async function fetchStripeConfig(): Promise<StripeConfigResponse | null> {
+  return tryFetchJson<StripeConfigResponse>('/api/stripe/config');
+}
+
+export interface CreatePaymentIntentResponse {
+  id: string;
+  client_secret: string;
+  amount: number;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  publishable_key?: string;
+  description?: string;
+  message?: string;
+}
+
+export async function createPaymentIntent(params: {
+  amount_cents?: number;
+  amount?: number;
+  currency?: string;
+  customer_name?: string;
+  customer_email?: string;
+  description?: string;
+  payment_method_type?: string;
+}): Promise<CreatePaymentIntentResponse | null> {
+  return tryFetchJson<CreatePaymentIntentResponse>('/api/stripe/create-payment-intent', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export interface PaymentIntentStatusResponse {
+  id: string;
+  amount: number;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  description?: string;
+  created?: number;
+}
+
+export async function fetchPaymentIntentStatus(
+  paymentIntentId: string
+): Promise<PaymentIntentStatusResponse | null> {
+  return tryFetchJson<PaymentIntentStatusResponse>(
+    `/api/stripe/payment-intent/${encodeURIComponent(paymentIntentId)}`
+  );
+}

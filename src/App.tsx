@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CaseFormInput,
   ChargebackCase,
@@ -28,6 +28,11 @@ import { HindsightPrecedentsSection } from './components/HindsightPrecedentsSect
 import { CaseHistoryTable } from './components/CaseHistoryTable';
 import { LearningChainView } from './components/LearningChainView';
 import { LiveLearningDemoModal } from './components/LiveLearningDemoModal';
+import { GooglePayCheckout } from './components/GooglePayCheckout';
+import { StripeDisputesView } from './components/StripeDisputesView';
+import { StripePaymentsView } from './components/StripePaymentsView';
+import { fetchStripeStatus } from './services/stripeApi';
+import { StripeStatus } from './types/stripe';
 import {
   AlertCircle,
   ArrowDown,
@@ -47,6 +52,7 @@ import {
   Plus,
   Search,
   Send,
+  Smartphone,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -180,7 +186,82 @@ export default function App() {
     registerAnalyzedCase,
   } = usePrecedentStore();
 
-  const [activeTab, setActiveTab] = useState<NavigationTab>('overview');
+  const [activeTab, setActiveTab] = useState<NavigationTab>(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const h = window.location.hash.replace('#', '') as NavigationTab;
+      const validTabs: NavigationTab[] = [
+        'overview',
+        'disputes',
+        'payments',
+        'checkout',
+        'analyze',
+        'history',
+        'learning-chain',
+        'memory',
+        'outcomes',
+        'analytics',
+      ];
+      if (validTabs.includes(h)) return h;
+    }
+    return 'overview';
+  });
+
+  const handleSelectTab = useCallback((tab: NavigationTab) => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      window.location.hash = tab;
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace('#', '') as NavigationTab;
+      const validTabs: NavigationTab[] = [
+        'overview',
+        'disputes',
+        'payments',
+        'checkout',
+        'analyze',
+        'history',
+        'learning-chain',
+        'memory',
+        'outcomes',
+        'analytics',
+      ];
+      if (validTabs.includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const [stripeStatusData, setStripeStatusData] = useState<StripeStatus>({
+    connected: true,
+    mode: 'test_live_key',
+    livemode: false,
+    secret_key_configured: true,
+    webhook_secret_configured: true,
+    key_prefix: 'sk_test_demo',
+    total_payments: 4,
+    total_disputes: 3,
+    needs_response_count: 3,
+    webhook_events_count: 0,
+    message: 'Connected to Stripe Test Mode',
+  });
+
+  const refreshStripeStatus = useCallback(async () => {
+    try {
+      const s = await fetchStripeStatus();
+      if (s) setStripeStatusData(s);
+    } catch {
+      // Keep current
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshStripeStatus();
+  }, [refreshStripeStatus]);
 
   // Analyze Dispute Form State (starts ready with CB-001 for the sequential precedent flow)
   const [formData, setFormData] = useState<CaseFormInput>(
@@ -596,16 +677,22 @@ export default function App() {
       <div className="shrink-0 lg:w-64 lg:min-w-64 lg:max-w-64">
         <Navigation
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={handleSelectTab}
           backendStatus={backendStatus}
           hindsightStatus={hindsightStatus}
           lastAnalysisAt={lastAnalysisAt}
-          onRefreshStatus={refreshConnectionStatus}
+          onRefreshStatus={() => {
+            refreshConnectionStatus();
+            refreshStripeStatus();
+          }}
           counts={{
             cases: cases.length,
             memories: metrics.uniquePrecedents || memories.length,
             outcomes: outcomes.length,
+            disputes: stripeStatusData.total_disputes,
+            payments: stripeStatusData.total_payments,
           }}
+          stripeStatus={stripeStatusData.connected ? 'connected' : 'disconnected'}
           onOpenLiveDemo={() => setLiveDemoOpen(true)}
         />
       </div>
@@ -683,6 +770,14 @@ export default function App() {
                   >
                     <Play className="w-3.5 h-3.5 fill-slate-950/30" />
                     <span>Run Live Learning Demo</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTab('checkout')}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-teal-300 hover:text-white bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/40 rounded-lg transition-colors whitespace-nowrap shadow-sm"
+                  >
+                    <Smartphone className="w-3.5 h-3.5 text-teal-400" />
+                    <span>Google Pay Checkout</span>
                   </button>
                   <button
                     type="button"
@@ -1039,6 +1134,15 @@ export default function App() {
               </div>
             </section>
 
+            {/* ==================== GOOGLE PAY CHECKOUT SECTION ON DASHBOARD ==================== */}
+            <GooglePayCheckout
+              variant="dashboard"
+              onNavigateTab={handleSelectTab}
+              onPaymentCompleted={() => {
+                refreshStripeStatus();
+              }}
+            />
+
             {/* Live Session Cases Table */}
             <section className="space-y-4">
               <div className="flex flex-wrap items-baseline justify-between gap-4">
@@ -1075,6 +1179,37 @@ export default function App() {
               />
             </section>
           </div>
+        )}
+
+        {/* ==================== VIEW: STRIPE DISPUTES ==================== */}
+        {activeTab === 'disputes' && (
+          <StripeDisputesView
+            status={stripeStatusData}
+            onRefreshStatus={refreshStripeStatus}
+            onNavigateToHistory={() => setActiveTab('history')}
+            onNavigateToMemory={() => setActiveTab('memory')}
+          />
+        )}
+
+        {/* ==================== VIEW: STRIPE PAYMENTS ==================== */}
+        {activeTab === 'payments' && (
+          <StripePaymentsView
+            status={stripeStatusData}
+            onRefreshStatus={refreshStripeStatus}
+            onSelectDisputeTab={() => setActiveTab('disputes')}
+            onNavigateCheckout={() => handleSelectTab('checkout')}
+          />
+        )}
+
+        {/* ==================== VIEW: GOOGLE PAY CHECKOUT ==================== */}
+        {activeTab === 'checkout' && (
+          <GooglePayCheckout
+            variant="page"
+            onNavigateTab={handleSelectTab}
+            onPaymentCompleted={() => {
+              refreshStripeStatus();
+            }}
+          />
         )}
 
         {/* ==================== VIEW 2: ANALYZE DISPUTE ==================== */}

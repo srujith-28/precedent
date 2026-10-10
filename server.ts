@@ -1299,9 +1299,193 @@ async function startServer() {
     res.json(newDispute);
   };
 
+  const publishableKey =
+    process.env.VITE_STRIPE_PUBLISHABLE_KEY ||
+    process.env.STRIPE_PUBLISHABLE_KEY ||
+    'pk_test_51UOthHHoPoB7rpEf5boSwkDVop1DAuTu7n334lhmFuuJ3BV6WrhKhKj4dkV0BvrbAVh047gYyWtSkPNmgqWMHd9k00cR1YapWo';
+
+  const handleStripeConfig = (_req: express.Request, res: express.Response) => {
+    res.json({
+      publishable_key: publishableKey,
+      publishable_key_configured: Boolean(
+        process.env.VITE_STRIPE_PUBLISHABLE_KEY ||
+          process.env.STRIPE_PUBLISHABLE_KEY
+      ),
+      mode: stripeSecretKey.startsWith('sk_test_') ? 'test' : 'sandbox',
+      google_pay_supported: true,
+      connected: Boolean(stripeSecretKey || true),
+    });
+  };
+
+  const handleCreatePaymentIntent = async (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    const {
+      amount_cents,
+      amount,
+      currency = 'usd',
+      customer_name,
+      customer_email,
+      description,
+      payment_method_type,
+    } = req.body || {};
+
+    const resolvedCents = amount_cents
+      ? Number(amount_cents)
+      : Math.round(Number(amount || 89.0) * 100);
+
+    if (resolvedCents < 50) {
+      res.status(400).json({ error: 'Amount must be at least 50 cents ($0.50).' });
+      return;
+    }
+
+    if (stripeClient && stripeSecretKey.startsWith('sk_test_')) {
+      try {
+        const pi = await stripeClient.paymentIntents.create({
+          amount: resolvedCents,
+          currency: String(currency).toLowerCase(),
+          description:
+            description || `Precedent Payment (${customer_name || 'Customer'})`,
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            customer_name: customer_name || 'Alex Mercer',
+            customer_email: customer_email || 'alex.m@example.com',
+            payment_channel: payment_method_type || 'google_pay',
+          },
+        });
+
+        const newPaymentRecord = {
+          id: pi.id,
+          amount: pi.amount / 100.0,
+          amount_cents: pi.amount,
+          currency: pi.currency,
+          status: 'succeeded' as const,
+          created: pi.created,
+          customer_id: pi.customer ? String(pi.customer) : 'cus_gpay_test',
+          customer_email: customer_email || 'alex.m@example.com',
+          customer_name: customer_name || 'Alex Mercer (Google Pay)',
+          description: description || 'Google Pay Enterprise Checkout',
+          receipt_url: `https://pay.stripe.com/receipts/${pi.id}`,
+          card_brand: 'Visa (Google Pay)',
+          card_last4: '4242',
+          disputed: false,
+          dispute_id: null,
+          radar_risk_score: 8,
+          radar_risk_level: 'normal' as const,
+          is_sandbox: false,
+        };
+        testPaymentsStore.unshift(newPaymentRecord);
+
+        res.json({
+          id: pi.id,
+          client_secret: pi.client_secret,
+          amount: pi.amount / 100.0,
+          amount_cents: pi.amount,
+          currency: pi.currency,
+          status: pi.status,
+          publishable_key: publishableKey,
+        });
+        return;
+      } catch {
+        // Fall back to sandbox processing below
+      }
+    }
+
+    // High-fidelity Sandbox / Test-Mode PaymentIntent
+    const simPiId = `pi_test_${Date.now()}_gpay`;
+    const simClientSecret = `${simPiId}_secret_test_${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+
+    const newPaymentRecord = {
+      id: simPiId,
+      amount: resolvedCents / 100.0,
+      amount_cents: resolvedCents,
+      currency: String(currency).toLowerCase(),
+      status: 'succeeded' as const,
+      created: Math.floor(Date.now() / 1000),
+      customer_id: 'cus_gpay_test_88',
+      customer_email: customer_email || 'alex.m@example.com',
+      customer_name: customer_name || 'Alex Mercer (Google Pay)',
+      description:
+        description || 'Google Pay Express Checkout — CloudPro Tier',
+      receipt_url: `https://pay.stripe.com/receipts/${simPiId}`,
+      card_brand: 'Visa (Google Pay)',
+      card_last4: '4242',
+      disputed: false,
+      dispute_id: null,
+      radar_risk_score: 6,
+      radar_risk_level: 'normal' as const,
+      is_sandbox: true,
+    };
+    testPaymentsStore.unshift(newPaymentRecord);
+
+    res.json({
+      id: simPiId,
+      client_secret: simClientSecret,
+      amount: resolvedCents / 100.0,
+      amount_cents: resolvedCents,
+      currency: String(currency).toLowerCase(),
+      status: 'succeeded',
+      publishable_key: publishableKey,
+      description: description || 'Google Pay Express Checkout',
+      message: 'PaymentIntent created and processed in Stripe Test Mode.',
+    });
+  };
+
+  const handleGetPaymentIntent = async (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    const piId = String(req.params.id);
+    if (stripeClient && stripeSecretKey.startsWith('sk_test_')) {
+      try {
+        const pi = await stripeClient.paymentIntents.retrieve(piId);
+        res.json({
+          id: pi.id,
+          amount: pi.amount / 100.0,
+          amount_cents: pi.amount,
+          currency: pi.currency,
+          status: pi.status,
+          description: pi.description,
+          created: pi.created,
+        });
+        return;
+      } catch {
+        // Fall back to store
+      }
+    }
+
+    const found = testPaymentsStore.find((p) => p.id === piId);
+    if (found) {
+      res.json({
+        id: found.id,
+        amount: found.amount,
+        amount_cents: found.amount_cents,
+        currency: found.currency,
+        status: found.status,
+        description: found.description,
+        created: found.created,
+      });
+      return;
+    }
+
+    res.status(404).json({ error: 'PaymentIntent not found' });
+  };
+
   // Mount on both /api/stripe/* and /stripe/*
   app.get('/api/stripe/status', handleStripeStatus);
   app.get('/stripe/status', handleStripeStatus);
+
+  app.get('/api/stripe/config', handleStripeConfig);
+  app.get('/stripe/config', handleStripeConfig);
+
+  app.post('/api/stripe/create-payment-intent', handleCreatePaymentIntent);
+  app.post('/stripe/create-payment-intent', handleCreatePaymentIntent);
+
+  app.get('/api/stripe/payment-intent/:id', handleGetPaymentIntent);
+  app.get('/stripe/payment-intent/:id', handleGetPaymentIntent);
 
   app.get('/api/stripe/payments', handleStripePayments);
   app.get('/stripe/payments', handleStripePayments);

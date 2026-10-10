@@ -135,3 +135,95 @@ def test_stripe_dispute_detail_not_found(monkeypatch):
     with patch("stripe.Dispute.retrieve", side_effect=stripe.InvalidRequestError("No such dispute", "id")):
         res = client.get("/stripe/disputes/dp_nonexistent")
         assert res.status_code == 404
+
+
+def test_stripe_config_endpoint(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_mock_123")
+    monkeypatch.setenv("STRIPE_PUBLISHABLE_KEY", "pk_test_sample_123")
+    from app.main import app
+    client = TestClient(app)
+
+    res = client.get("/stripe/config")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["publishable_key"] == "pk_test_sample_123"
+    assert data["mode"] == "test"
+    assert data["google_pay_supported"] is True
+
+
+def test_create_payment_intent_missing_key(monkeypatch):
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    from app.main import app
+    client = TestClient(app)
+
+    res = client.post("/stripe/create-payment-intent", json={"amount_cents": 2500, "currency": "usd"})
+    assert res.status_code == 503
+    assert "STRIPE_SECRET_KEY is not configured" in res.json()["detail"]
+
+
+def test_create_payment_intent_invalid_amount(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_mock_123")
+    from app.main import app
+    client = TestClient(app)
+
+    res = client.post("/stripe/create-payment-intent", json={"amount_cents": 10, "currency": "usd"})
+    assert res.status_code == 400
+    assert "at least 50 cents" in res.json()["detail"]
+
+
+def test_create_payment_intent_success_mock(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_mock_123")
+    monkeypatch.setenv("STRIPE_PUBLISHABLE_KEY", "pk_test_sample_123")
+    from app.main import app
+    client = TestClient(app)
+
+    mock_pi = {
+        "id": "pi_mock_created_99",
+        "client_secret": "pi_mock_created_99_secret_abc",
+        "amount": 4900,
+        "currency": "usd",
+        "status": "requires_payment_method",
+        "description": "Precedent Payment",
+    }
+
+    with patch("stripe.PaymentIntent.create", return_value=mock_pi):
+        res = client.post(
+            "/stripe/create-payment-intent",
+            json={
+                "amount_cents": 4900,
+                "currency": "usd",
+                "customer_name": "Alex Mercer",
+                "customer_email": "alex@example.com",
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["id"] == "pi_mock_created_99"
+        assert data["client_secret"] == "pi_mock_created_99_secret_abc"
+        assert data["amount"] == 49.0
+        assert data["publishable_key"] == "pk_test_sample_123"
+
+
+def test_retrieve_payment_intent_mock(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_mock_123")
+    from app.main import app
+    client = TestClient(app)
+
+    mock_pi = {
+        "id": "pi_mock_status_88",
+        "amount": 8900,
+        "currency": "usd",
+        "status": "succeeded",
+        "description": "CloudPro SaaS",
+        "created": 1700000000,
+        "charges": {"data": []},
+    }
+
+    with patch("stripe.PaymentIntent.retrieve", return_value=mock_pi):
+        res = client.get("/stripe/payment-intent/pi_mock_status_88")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["id"] == "pi_mock_status_88"
+        assert data["status"] == "succeeded"
+        assert data["amount"] == 89.0
+

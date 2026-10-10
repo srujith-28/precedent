@@ -13,13 +13,16 @@ from app.services.event_store import init_db, list_webhook_events
 from app.services.groq import generate_decision
 from app.services.hindsight import recall_memories, retain_memory
 from app.services.stripe_service import (
+    create_payment_intent,
     get_stripe_dispute,
+    get_stripe_publishable_key,
     get_stripe_secret_key,
     get_stripe_status,
     get_stripe_webhook_secret,
     list_stripe_disputes,
     list_stripe_payments,
     process_webhook_event_payload,
+    retrieve_payment_intent,
 )
 
 
@@ -58,6 +61,16 @@ class ChargebackOutcome(BaseModel):
     outcome: str
     actual_result: str
     lesson: str
+
+
+class CreatePaymentIntentRequest(BaseModel):
+    amount_cents: int
+    currency: str = "usd"
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[dict] = None
+    payment_method_type: Optional[str] = None
 
 
 @app.get("/")
@@ -316,3 +329,89 @@ def stripe_webhooks_history(limit: int = 50):
     return {
         "webhooks": list_webhook_events(limit=limit),
     }
+
+
+@app.get("/stripe/config")
+def stripe_config():
+    key = get_stripe_secret_key()
+    return {
+        "publishable_key": get_stripe_publishable_key(),
+        "mode": "test" if key.startswith("sk_test_") else "live" if key.startswith("sk_live_") else "unconfigured",
+        "google_pay_supported": True,
+        "connected": bool(key),
+    }
+
+
+@app.post("/stripe/create-payment-intent")
+def stripe_create_payment_intent(req: CreatePaymentIntentRequest):
+    if not get_stripe_secret_key():
+        raise HTTPException(
+            status_code=503,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
+    try:
+        return create_payment_intent(
+            amount_cents=req.amount_cents,
+            currency=req.currency,
+            customer_name=req.customer_name,
+            customer_email=req.customer_email,
+            description=req.description,
+            metadata=req.metadata,
+            payment_method_type=req.payment_method_type,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to create PaymentIntent: {str(e)}")
+
+
+@app.get("/stripe/payment-intent/{payment_intent_id}")
+def stripe_get_payment_intent(payment_intent_id: str):
+    if not get_stripe_secret_key():
+        raise HTTPException(
+            status_code=503,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
+    try:
+        return retrieve_payment_intent(payment_intent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"PaymentIntent {payment_intent_id} not found")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to retrieve PaymentIntent: {str(e)}")
+
+
+# API Prefix aliases for consistent frontend proxy routing
+@app.get("/api/stripe/status")
+def api_stripe_status():
+    return stripe_status()
+
+
+@app.get("/api/stripe/config")
+def api_stripe_config():
+    return stripe_config()
+
+
+@app.post("/api/stripe/create-payment-intent")
+def api_stripe_create_payment_intent(req: CreatePaymentIntentRequest):
+    return stripe_create_payment_intent(req)
+
+
+@app.get("/api/stripe/payment-intent/{payment_intent_id}")
+def api_stripe_get_payment_intent(payment_intent_id: str):
+    return stripe_get_payment_intent(payment_intent_id)
+
+
+@app.get("/api/stripe/payments")
+def api_stripe_payments(limit: int = 20):
+    return stripe_payments(limit=limit)
+
+
+@app.get("/api/stripe/disputes")
+def api_stripe_disputes(limit: int = 20):
+    return stripe_disputes(limit=limit)
+
+
+@app.get("/api/stripe/disputes/{dispute_id}")
+def api_stripe_dispute_detail(dispute_id: str):
+    return stripe_dispute_detail(dispute_id)
+

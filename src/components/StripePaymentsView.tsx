@@ -14,6 +14,7 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   X,
   Zap,
 } from 'lucide-react';
@@ -22,12 +23,14 @@ interface StripePaymentsViewProps {
   status: StripeStatus;
   onRefreshStatus: () => void;
   onSelectDisputeTab?: () => void;
+  onNavigateCheckout?: () => void;
 }
 
 export const StripePaymentsView: React.FC<StripePaymentsViewProps> = ({
   status,
   onRefreshStatus,
   onSelectDisputeTab,
+  onNavigateCheckout,
 }) => {
   const [payments, setPayments] = useState<StripePayment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -108,6 +111,17 @@ export const StripePaymentsView: React.FC<StripePaymentsViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
+          {onNavigateCheckout && (
+            <button
+              type="button"
+              onClick={onNavigateCheckout}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              New Google Pay Checkout
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
@@ -115,7 +129,7 @@ export const StripePaymentsView: React.FC<StripePaymentsViewProps> = ({
               onRefreshStatus();
             }}
             disabled={loading}
-            className="p-2 text-slate-400 hover:text-white bg-[#0C1322] hover:bg-slate-800 border border-slate-800 rounded-lg transition-colors"
+            className="p-2 text-slate-400 hover:text-white bg-[#0C1322] hover:bg-slate-800 border border-slate-800 rounded-lg transition-colors cursor-pointer"
             title="Refresh payments"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-teal-400' : ''}`} />

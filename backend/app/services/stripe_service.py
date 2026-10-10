@@ -38,9 +38,20 @@ def init_stripe_client() -> stripe:
     return stripe
 
 
+def get_stripe_publishable_key() -> str:
+    pk = (
+        os.getenv("STRIPE_PUBLISHABLE_KEY", "").strip()
+        or os.getenv("VITE_STRIPE_PUBLISHABLE_KEY", "").strip()
+    )
+    if not pk or "your_stripe" in pk:
+        pk = "pk_test_51UOthHHoPoB7rpEf5boSwkDVop1DAuTu7n334lhmFuuJ3BV6WrhKhKj4dkV0BvrbAVh047gYyWtSkPNmgqWMHd9k00cR1YapWo"
+    return pk
+
+
 def get_stripe_status() -> Dict[str, Any]:
     key = get_stripe_secret_key()
     wh_secret = get_stripe_webhook_secret()
+    pk = get_stripe_publishable_key()
 
     configured = bool(key)
     mode = "unconfigured"
@@ -55,9 +66,129 @@ def get_stripe_status() -> Dict[str, Any]:
         "connected": configured,
         "mode": mode,
         "secret_key_configured": configured,
+        "publishable_key_configured": bool(pk),
+        "publishable_key": pk if pk else None,
         "webhook_secret_configured": bool(wh_secret),
+        "google_pay_supported": True,
         "total_events_processed": get_event_count(),
     }
+
+
+def create_payment_intent(
+    amount_cents: int,
+    currency: str = "usd",
+    customer_name: Optional[str] = None,
+    customer_email: Optional[str] = None,
+    description: Optional[str] = None,
+    metadata: Optional[Dict[str, str]] = None,
+    payment_method_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Creates a Stripe PaymentIntent with automatic payment methods (supporting Google Pay & Cards).
+    Persists to durable SQLite store.
+    """
+    if amount_cents < 50:
+        raise ValueError("Amount must be at least 50 cents ($0.50)")
+    if amount_cents > 10_000_000:
+        raise ValueError("Amount exceeds maximum transaction limit ($100,000)")
+
+    client = init_stripe_client()
+    meta = metadata.copy() if metadata else {}
+    if customer_name:
+        meta["customer_name"] = customer_name
+    if customer_email:
+        meta["customer_email"] = customer_email
+    if payment_method_type:
+        meta["payment_channel"] = payment_method_type
+
+    try:
+        pi = client.PaymentIntent.create(
+            amount=amount_cents,
+            currency=currency.lower(),
+            description=description or f"Precedent Payment ({customer_name or 'Customer'})",
+            automatic_payment_methods={"enabled": True},
+            metadata=meta,
+        )
+
+        # Store in durable SQLite store
+        upsert_payment_record(
+            payment_id=pi.get("id"),
+            amount=pi.get("amount"),
+            currency=pi.get("currency"),
+            status=pi.get("status"),
+            customer_id=customer_email or customer_name or "customer_checkout",
+            created_at=pi.get("created"),
+            payload={
+                "id": pi.get("id"),
+                "amount": pi.get("amount"),
+                "currency": pi.get("currency"),
+                "status": pi.get("status"),
+                "description": pi.get("description"),
+                "customer_name": customer_name,
+                "customer_email": customer_email,
+            },
+        )
+
+        return {
+            "id": pi.get("id"),
+            "client_secret": pi.get("client_secret"),
+            "amount": pi.get("amount", 0) / 100.0,
+            "amount_cents": pi.get("amount"),
+            "currency": pi.get("currency"),
+            "status": pi.get("status"),
+            "description": pi.get("description"),
+            "publishable_key": get_stripe_publishable_key(),
+        }
+    except Exception as e:
+        raise RuntimeError(f"Stripe API error creating PaymentIntent: {str(e)}")
+
+
+def retrieve_payment_intent(payment_intent_id: str) -> Dict[str, Any]:
+    """
+    Retrieves authoritative PaymentIntent state from Stripe.
+    """
+    client = init_stripe_client()
+    try:
+        pi = client.PaymentIntent.retrieve(payment_intent_id)
+        # Update local durable record
+        upsert_payment_record(
+            payment_id=pi.get("id"),
+            amount=pi.get("amount"),
+            currency=pi.get("currency"),
+            status=pi.get("status"),
+            customer_id=pi.get("customer") or "customer_checkout",
+            created_at=pi.get("created"),
+            payload={
+                "id": pi.get("id"),
+                "amount": pi.get("amount"),
+                "currency": pi.get("currency"),
+                "status": pi.get("status"),
+                "description": pi.get("description"),
+            },
+        )
+
+        return {
+            "id": pi.get("id"),
+            "amount": pi.get("amount", 0) / 100.0 if pi.get("amount") is not None else None,
+            "amount_cents": pi.get("amount"),
+            "currency": pi.get("currency"),
+            "status": pi.get("status"),
+            "description": pi.get("description"),
+            "created": pi.get("created"),
+            "charges": [
+                {
+                    "id": ch.get("id"),
+                    "paid": ch.get("paid"),
+                    "status": ch.get("status"),
+                    "payment_method_details": ch.get("payment_method_details"),
+                }
+                for ch in getattr(pi.get("charges", {}), "data", [])
+            ] if isinstance(pi.get("charges"), dict) or hasattr(pi.get("charges"), "data") else [],
+        }
+    except stripe.InvalidRequestError:
+        raise KeyError(f"PaymentIntent {payment_intent_id} not found")
+    except Exception as e:
+        raise RuntimeError(f"Stripe API error retrieving PaymentIntent: {str(e)}")
 
 
 def list_stripe_payments(limit: int = 20) -> List[Dict[str, Any]]:
