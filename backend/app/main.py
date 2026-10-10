@@ -159,3 +159,173 @@ def record_outcome(outcome: ChargebackOutcome):
         "case_id": outcome.case_id,
         "message": "Outcome stored in Hindsight.",
     }
+
+
+# ============================================================================
+# Stripe Payment Dispute Intelligence & Webhook Endpoints
+# ============================================================================
+from fastapi import Request, HTTPException, Header
+from app.services.stripe_service import (
+    get_stripe_status,
+    list_stripe_payments,
+    list_stripe_disputes,
+    get_stripe_dispute,
+    record_webhook_event,
+    PROCESSED_EVENT_IDS,
+    WEBHOOK_EVENT_LOG,
+    test_disputes_store,
+    test_payments_store,
+    STRIPE_WEBHOOK_SECRET,
+)
+
+
+@app.get("/stripe/status")
+def stripe_status():
+    return get_stripe_status()
+
+
+@app.get("/stripe/payments")
+def stripe_payments():
+    return {
+        "payments": list_stripe_payments(),
+        "total": len(test_payments_store),
+        "is_sandbox": True,
+    }
+
+
+@app.get("/stripe/disputes")
+def stripe_disputes():
+    return {
+        "disputes": list_stripe_disputes(),
+        "total": len(test_disputes_store),
+        "is_sandbox": True,
+    }
+
+
+@app.get("/stripe/disputes/{dispute_id}")
+def stripe_dispute_detail(dispute_id: str):
+    dispute = get_stripe_dispute(dispute_id)
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+    return dispute
+
+
+@app.post("/stripe/disputes/{dispute_id}/analyze")
+def analyze_stripe_dispute(dispute_id: str):
+    dispute = get_stripe_dispute(dispute_id)
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+
+    reason_clean = dispute.get("reason", "Subscription").replace("_", " ").title()
+    customer_claim = dispute.get("customer_claim", "")
+    connected = dispute.get("connected_evidence", {})
+    card_info = f"{connected.get('card_brand', 'Card')} •••• {connected.get('card_last4', '0000')}"
+    avs_info = "AVS Postal match verified" if connected.get("avs_postal_match") else "AVS postal mismatch"
+    cvc_info = f"CVC: {connected.get('cvc_check', 'unknown')}"
+    ip_info = f"Purchase IP: {connected.get('customer_purchase_ip', 'unknown')}"
+
+    merchant_evidence = (
+        f"Stripe payment verified ({card_info}, {avs_info}, {cvc_info}, {ip_info}). "
+        f"Receipt: {connected.get('receipt_url', 'on file')}. "
+        f"Merchant documentation: {dispute.get('merchant_supplied_evidence', 'Standard billing capture')}"
+    )
+
+    case_obj = ChargebackCase(
+        case_id=dispute.get("id"),
+        dispute_type=reason_clean,
+        amount=float(dispute.get("amount", 0.0)),
+        customer_claim=customer_claim,
+        merchant_evidence=merchant_evidence,
+    )
+
+    analysis_res = analyze_case(case_obj)
+    dispute["hindsight_analysis"] = analysis_res
+    return analysis_res
+
+
+class StripeDisputeOutcomeInput(BaseModel):
+    outcome: str  # WON or LOST
+    actual_result: str
+    lesson: str
+
+
+@app.post("/stripe/disputes/{dispute_id}/outcome")
+def record_stripe_dispute_outcome(dispute_id: str, body: StripeDisputeOutcomeInput):
+    dispute = get_stripe_dispute(dispute_id)
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+
+    # Retain lesson in Hindsight
+    outcome_payload = ChargebackOutcome(
+        case_id=dispute_id,
+        outcome=body.outcome.upper(),
+        actual_result=body.actual_result,
+        lesson=body.lesson,
+    )
+    retain_res = record_outcome(outcome_payload)
+
+    dispute["outcome_recorded"] = True
+    dispute["final_outcome"] = body.outcome.lower()
+    dispute["status"] = "won" if body.outcome.upper() == "WON" else "lost"
+    dispute["actual_result"] = body.actual_result
+    dispute["lesson_learned"] = body.lesson
+
+    return {
+        "status": "stored",
+        "dispute_id": dispute_id,
+        "dispute_status": dispute["status"],
+        "hindsight": retain_res,
+        "message": f"Dispute outcome recorded and retained in Hindsight.",
+    }
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(None)):
+    raw_body = await request.body()
+    try:
+        event = json.loads(raw_body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    event_id = event.get("id", f"evt_sim_{int(time.time())}")
+    event_type = event.get("type", "unknown")
+
+    # Idempotency check: prevent duplicate event processing & duplicate Hindsight writes
+    if event_id in PROCESSED_EVENT_IDS:
+        return {
+            "status": "duplicate_skipped",
+            "event_id": event_id,
+            "message": "Event already processed idempotently.",
+        }
+
+    verified = False
+    if STRIPE_WEBHOOK_SECRET and stripe_signature:
+        try:
+            import stripe
+            stripe.Webhook.construct_event(raw_body, stripe_signature, STRIPE_WEBHOOK_SECRET)
+            verified = True
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {str(e)}")
+
+    data_object = event.get("data", {}).get("object", {})
+    data_id = data_object.get("id", "")
+    summary = f"Processed {event_type} event for object {data_id}"
+
+    # Handle dispute events
+    if event_type == "charge.dispute.created":
+        dispute_id = data_object.get("id", f"dp_wh_{int(time.time())}")
+        summary = f"New dispute {dispute_id} created"
+    elif event_type == "charge.dispute.closed":
+        status = data_object.get("status", "")
+        summary = f"Dispute closed with status: {status}"
+
+    record = record_webhook_event(event_id, event_type, verified, summary, data_id)
+    return {"status": "success", "event": record}
+
+
+@app.get("/stripe/webhooks")
+def list_stripe_webhooks():
+    return {
+        "webhooks": WEBHOOK_EVENT_LOG,
+        "total": len(WEBHOOK_EVENT_LOG),
+    }

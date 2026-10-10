@@ -3,6 +3,7 @@ import { ConnectionState, NavigationTab } from '../types/precedent';
 import {
   BarChart3,
   BrainCircuit,
+  CreditCard,
   FileSearch,
   GitMerge,
   GitPullRequest,
@@ -11,6 +12,7 @@ import {
   Menu,
   Play,
   RefreshCw,
+  ShieldAlert,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -26,7 +28,10 @@ interface NavigationProps {
     cases: number;
     memories: number;
     outcomes: number;
+    disputes?: number;
+    payments?: number;
   };
+  stripeStatus?: ConnectionState;
   onOpenLiveDemo?: () => void;
 }
 
@@ -35,13 +40,27 @@ const NAV_ITEMS: {
   label: string;
   tooltip: string;
   icon: React.FC<{ className?: string }>;
-  badgeKey?: 'cases' | 'memories' | 'outcomes';
+  badgeKey?: 'cases' | 'memories' | 'outcomes' | 'disputes' | 'payments';
 }[] = [
   {
     id: 'overview',
     label: 'Overview',
     tooltip: 'Real-time chargeback intelligence overview & Hindsight pipeline',
     icon: LayoutDashboard,
+  },
+  {
+    id: 'disputes',
+    label: 'Stripe Disputes',
+    tooltip: 'Real-time Stripe test disputes & representment queue with Hindsight recall',
+    icon: ShieldAlert,
+    badgeKey: 'disputes',
+  },
+  {
+    id: 'payments',
+    label: 'Stripe Payments',
+    tooltip: 'Captured Stripe test payments, customer references, and transaction risks',
+    icon: CreditCard,
+    badgeKey: 'payments',
   },
   {
     id: 'analyze',
@@ -110,6 +129,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   lastAnalysisAt,
   onRefreshStatus,
   counts,
+  stripeStatus = 'connected',
   onOpenLiveDemo,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -263,6 +283,20 @@ export const Navigation: React.FC<NavigationProps> = ({
               </span>
             </div>
 
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Stripe</span>
+              <span className="flex items-center gap-1.5 font-mono text-[11px] text-slate-200">
+                <StatusDot status={stripeStatus || 'connected'} />
+                <span>
+                  {stripeStatus === 'checking'
+                    ? 'Checking...'
+                    : stripeStatus === 'disconnected'
+                    ? 'Unconfigured'
+                    : 'Test Mode'}
+                </span>
+              </span>
+            </div>
+
             <div className="pt-2 border-t border-slate-800/80 flex flex-col gap-0.5">
               <span className="text-[10px] text-slate-500">Last Analysis</span>
               <span className="font-mono text-[11px] text-slate-300 tabular-nums truncate">
@@ -309,6 +343,11 @@ export const Navigation: React.FC<NavigationProps> = ({
               <span className="flex items-center gap-1.5">
                 <StatusDot status={hindsightStatus} />
                 <span>Hindsight: {formatStatusLabel(hindsightStatus)}</span>
+              </span>
+              <span className="text-slate-600">·</span>
+              <span className="flex items-center gap-1.5">
+                <StatusDot status={stripeStatus} />
+                <span>Stripe: Test Mode</span>
               </span>
             </div>
 

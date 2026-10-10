@@ -3,6 +3,8 @@ import { EvidenceIntelligenceData } from '../utils/evidenceIntelligence';
 
 export type NavigationTab =
   | 'overview'
+  | 'disputes'
+  | 'payments'
   | 'analyze'
   | 'history'
   | 'learning-chain'
